@@ -15,7 +15,8 @@ def get_all_playlists():
     offset = 0
 
     while True:
-        resp = Zotify.invoke_url_with_params(MY_PLAYLISTS_URL, limit=limit, offset=offset)
+        # Request with locale to ensure playlist names are localized in UI and any downstream usage
+        resp = Zotify.invoke_url_with_params(MY_PLAYLISTS_URL, limit=limit, offset=offset, market='from_token', locale=Zotify.CONFIG.get_locale())
         offset += limit
         playlists.extend(resp[ITEMS])
         if len(resp[ITEMS]) < limit:
@@ -31,7 +32,14 @@ def get_playlist_songs(playlist_id):
     limit = 100
 
     while True:
-        resp = Zotify.invoke_url_with_params(f'{PLAYLISTS_URL}/{playlist_id}/tracks', limit=limit, offset=offset)
+        # Include locale so returned track objects have localized fields (cosmetic; filenames use per-track fetch)
+        resp = Zotify.invoke_url_with_params(
+            f'{PLAYLISTS_URL}/{playlist_id}/tracks',
+            limit=limit,
+            offset=offset,
+            market='from_token',
+            locale=Zotify.CONFIG.get_locale()
+        )
         offset += limit
         songs.extend(resp[ITEMS])
         if len(resp[ITEMS]) < limit:
@@ -48,12 +56,20 @@ def get_playlist_info(playlist_id):
 
 def download_playlist(playlist):
     """Downloads all the songs from a playlist"""
+    # Fetch localized playlist name using the configured locale so folder names are localized too
+    pl_name, _ = get_playlist_info(playlist[ID])
 
     playlist_songs = [song for song in get_playlist_songs(playlist[ID]) if song[TRACK] is not None and song[TRACK][ID]]
     p_bar = Printer.progress(playlist_songs, unit='song', total=len(playlist_songs), unit_scale=True)
     enum = 1
     for song in p_bar:
-        download_track('extplaylist', song[TRACK][ID], extra_keys={'playlist': playlist[NAME], 'playlist_num': str(enum).zfill(2)}, disable_progressbar=True)
+        # Use localized playlist name; track metadata (artist/title) is localized in download_track via locale
+        download_track(
+            'extplaylist',
+            song[TRACK][ID],
+            extra_keys={'playlist': pl_name, 'playlist_num': str(enum).zfill(2)},
+            disable_progressbar=True
+        )
         p_bar.set_description(song[TRACK][NAME])
         enum += 1
 

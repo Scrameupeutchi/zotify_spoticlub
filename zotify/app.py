@@ -54,10 +54,11 @@ def client(args) -> None:
 
     if args.liked_songs:
         for song in get_saved_tracks():
-            if not song[TRACK][NAME] or not song[TRACK][ID]:
+            track_obj = song.get(TRACK) if isinstance(song, dict) else None
+            if not track_obj or not track_obj.get(NAME) or not track_obj.get(ID):
                 Printer.print(PrintChannel.SKIPS, '###   SKIPPING:  SONG DOES NOT EXIST ANYMORE   ###' + "\n")
-            else:
-                download_track('liked', song[TRACK][ID])
+                continue
+            download_track('liked', track_obj[ID])
         return
     
     if args.followed_artists:
@@ -105,19 +106,20 @@ def download_from_urls(urls: list[str]) -> bool:
             enum = 1
             char_num = len(str(len(playlist_songs)))
             for song in playlist_songs:
-                if not song[TRACK][NAME] or not song[TRACK][ID]:
+                track_obj = song.get(TRACK) if isinstance(song, dict) else None
+                if not track_obj or not track_obj.get(NAME) or not track_obj.get(ID):
                     Printer.print(PrintChannel.SKIPS, '###   SKIPPING:  SONG DOES NOT EXIST ANYMORE   ###' + "\n")
                 else:
-                    if song[TRACK][TYPE] == "episode": # Playlist item is a podcast episode
-                        download_episode(song[TRACK][ID])
+                    if track_obj.get(TYPE) == "episode": # Playlist item is a podcast episode
+                        download_episode(track_obj[ID])
                     else:
-                        download_track('playlist', song[TRACK][ID], extra_keys=
+                        download_track('playlist', track_obj[ID], extra_keys=
                         {
-                            'playlist_song_name': song[TRACK][NAME],
+                            'playlist_song_name': track_obj[NAME],
                             'playlist': name,
                             'playlist_num': str(enum).zfill(char_num),
                             'playlist_id': playlist_id,
-                            'playlist_track_id': song[TRACK][ID]
+                            'playlist_track_id': track_obj[ID]
                         })
                     enum += 1
         elif episode_id is not None:

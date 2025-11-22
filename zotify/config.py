@@ -36,6 +36,13 @@ PRINT_WARNINGS = 'PRINT_WARNINGS'
 RETRY_ATTEMPTS = 'RETRY_ATTEMPTS'
 CONFIG_VERSION = 'CONFIG_VERSION'
 DOWNLOAD_LYRICS = 'DOWNLOAD_LYRICS'
+LYRICS_LOCATION = 'LYRICS_LOCATION'
+LYRICS_FILENAME = 'LYRICS_FILENAME'
+ALWAYS_CHECK_LYRICS = 'ALWAYS_CHECK_LYRICS'
+LYRICS_MD_HEADER = 'LYRICS_MD_HEADER'
+MD_SAVE_LYRICS = 'MD_SAVE_LYRICS'
+UNIQUE_LYRICS_FILE = 'UNIQUE_LYRICS_FILE'
+LOCALE = 'LOCALE'
 
 CONFIG_VALUES = {
     SAVE_CREDENTIALS:           { 'default': 'True',  'type': bool, 'arg': '--save-credentials'           },
@@ -46,6 +53,12 @@ CONFIG_VALUES = {
     ROOT_PODCAST_PATH:          { 'default': '',      'type': str,  'arg': '--root-podcast-path'          },
     SPLIT_ALBUM_DISCS:          { 'default': 'False', 'type': bool, 'arg': '--split-album-discs'          },
     DOWNLOAD_LYRICS:            { 'default': 'True',  'type': bool, 'arg': '--download-lyrics'            },
+    LYRICS_LOCATION:            { 'default': '',      'type': str,  'arg': '--lyrics-location'            },
+    LYRICS_FILENAME:            { 'default': '{artist}_{song_name}', 'type': str, 'arg': '--lyrics-filename' },
+    ALWAYS_CHECK_LYRICS:        { 'default': 'False', 'type': bool, 'arg': '--always-check-lyrics'        },
+    LYRICS_MD_HEADER:           { 'default': 'False', 'type': bool, 'arg': '--lyrics-md-header'           },
+    MD_SAVE_LYRICS:             { 'default': 'True',  'type': bool, 'arg': '--md-save-lyrics'             },
+    UNIQUE_LYRICS_FILE:         { 'default': 'False', 'type': bool, 'arg': '--unique-file'                },
     MD_SAVE_GENRES:             { 'default': 'False', 'type': bool, 'arg': '--md-save-genres'             },
     MD_ALLGENRES:               { 'default': 'False', 'type': bool, 'arg': '--md-allgenres'               },
     MD_GENREDELIMITER:          { 'default': ',',     'type': str,  'arg': '--md-genredelimiter'          },
@@ -68,7 +81,8 @@ CONFIG_VALUES = {
     PRINT_API_ERRORS:           { 'default': 'True',  'type': bool, 'arg': '--print-api-errors'           },
     PRINT_PROGRESS_INFO:        { 'default': 'True',  'type': bool, 'arg': '--print-progress-info'        },
     PRINT_WARNINGS:             { 'default': 'True',  'type': bool, 'arg': '--print-warnings'             },
-    TEMP_DOWNLOAD_DIR:          { 'default': '',      'type': str,  'arg': '--temp-download-dir'          }
+    TEMP_DOWNLOAD_DIR:          { 'default': '',      'type': str,  'arg': '--temp-download-dir'          },
+    LOCALE:          		    { 'default': 'en-EN', 'type': str,  'arg': '--locale'          }
 }
 
 OUTPUT_DEFAULT_PLAYLIST = '{playlist}/{artist} - {song_name}.{ext}'
@@ -116,10 +130,18 @@ class Config:
                 cls.Values[key] = cls.parse_arg_value(key, CONFIG_VALUES[key]['default'])
 
         # Override config from commandline arguments
-
+        # Prefer using the argparse-derived dest name from the configured '--long-option'
         for key in CONFIG_VALUES:
-            if key.lower() in vars(args) and vars(args)[key.lower()] is not None:
-                cls.Values[key] = cls.parse_arg_value(key, vars(args)[key.lower()])
+            arg_flag = CONFIG_VALUES[key]['arg']
+            dest_name = arg_flag.lstrip('-').replace('-', '_') if isinstance(arg_flag, str) else None
+            args_ns = vars(args)
+            # 1) Use dest_name if present (e.g., '--unique-file' -> 'unique_file')
+            if dest_name and dest_name in args_ns and args_ns[dest_name] is not None:
+                cls.Values[key] = cls.parse_arg_value(key, args_ns[dest_name])
+                continue
+            # 2) Fallback to legacy behavior: key.lower() (e.g., 'LYRICS_FILENAME' -> 'lyrics_filename')
+            if key.lower() in args_ns and args_ns[key.lower()] is not None:
+                cls.Values[key] = cls.parse_arg_value(key, args_ns[key.lower()])
 
         if args.no_splash:
             cls.Values[PRINT_SPLASH] = False
@@ -198,6 +220,37 @@ class Config:
         return cls.get(DOWNLOAD_LYRICS)
 
     @classmethod
+    def get_lyrics_location(cls):
+        """Returns PurePath or None when empty (meaning use track output directory)."""
+        v = cls.get(LYRICS_LOCATION)
+        if not v:
+            return None
+        p = str(v)
+        if p.startswith('.'):
+            return PurePath(cls.get_root_path()).joinpath(PurePath(p).relative_to('.'))
+        return PurePath(Path(p).expanduser())
+
+    @classmethod
+    def get_lyrics_filename(cls) -> str:
+        return cls.get(LYRICS_FILENAME)
+
+    @classmethod
+    def get_always_check_lyrics(cls) -> bool:
+        return cls.get(ALWAYS_CHECK_LYRICS)
+
+    @classmethod
+    def get_lyrics_md_header(cls) -> bool:
+        return cls.get(LYRICS_MD_HEADER)
+
+    @classmethod
+    def get_save_lyrics_tags(cls) -> bool:
+        return cls.get(MD_SAVE_LYRICS)
+
+    @classmethod
+    def get_unique_lyrics_file(cls) -> bool:
+        return cls.get(UNIQUE_LYRICS_FILE)
+
+    @classmethod
     def get_bulk_wait_time(cls) -> int:
         return cls.get(BULK_WAIT_TIME)
 
@@ -216,6 +269,10 @@ class Config:
     @classmethod
     def get_transcode_bitrate(cls) -> str:
         return cls.get(TRANSCODE_BITRATE)
+        
+    @classmethod
+    def get_locale(cls) -> str:
+        return cls.get(LOCALE)
 
     @classmethod
     def get_song_archive(cls) -> str:

@@ -2325,7 +2325,7 @@ class Session(Closeable, MessageListener, SubListener):
                 # Joining from within the same thread would deadlock, so
                 # guard against that.
                 if threading.current_thread() is not self.__thread:
-                    self.__thread.join(timeout=1)
+                    self.__thread.join(timeout=0.5)
             except Exception:
                 # Shutdown should be best-effort; if join fails, we
                 # still proceed with closing the session.
@@ -2368,9 +2368,9 @@ class Session(Closeable, MessageListener, SubListener):
                     # session keeps reconnecting in a loop after the work is
                     # finished and the caller expects shutdown.
                     if not self.__running:
-                        self.__session.logger.info(
-                            "Receiver stopping after connection error: %s", ex
-                        )
+                        #self.__session.logger.info(
+                        #    "Receiver stopping after connection error: %s", ex
+                        #)
                         break
 
                     # Detect repeated "connection reset by peer" errors.
@@ -2384,9 +2384,9 @@ class Session(Closeable, MessageListener, SubListener):
                     # happen when Session.close() has torn down the
                     # connection while the receiver was blocked in recv().
                     if isinstance(ex, OSError) and getattr(ex, "errno", None) == 9:
-                        #self.__session.logger.info(
-                        #    "Receiver stopping after socket close (errno 9)"
-                        #)
+                        self.__session.logger.info(
+                            "Receiver stopping after socket close (errno 9)"
+                        )
                         self.__running = False
                         break
                     if is_reset:
