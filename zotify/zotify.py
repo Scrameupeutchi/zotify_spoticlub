@@ -65,7 +65,6 @@ class Zotify:
             'Accept-Language': f'{cls.CONFIG.get_language()}',
             'Accept': 'application/json',
             'app-platform': 'WebPlayer',
-            # Some Spotify spclient endpoints (e.g., color-lyrics) require a browser-like UA
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv=136.0) Gecko/20100101 Firefox/136.0',
         }
 
@@ -109,5 +108,6 @@ class Zotify:
 
     @classmethod
     def check_premium(cls) -> bool:
-        """ If user has spotify premium return true """
-        return (cls.SESSION.get_user_attribute(TYPE) == PREMIUM)
+        """ As we always use SpotiClub API, we just return true """
+        # return (cls.SESSION.get_user_attribute(TYPE) == PREMIUM)
+        return True
