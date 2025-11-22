@@ -1,10 +1,13 @@
 import json
+import base64
 from pathlib import Path
+from time import sleep
 from pwinput import pwinput
-import time
 import requests
 from librespot.audio.decoders import VorbisOnlyAudioQuality
-from librespot.core import Session
+from librespot.core import Session, OAuth
+from librespot.mercury import MercuryRequests
+from librespot.proto.Authentication_pb2 import AuthenticationType
 
 from zotify.const import TYPE, \
     PREMIUM, USER_READ_EMAIL, OFFSET, LIMIT, \
@@ -22,31 +25,60 @@ class Zotify:
 
     @classmethod
     def login(cls, args):
-        """ Authenticates with Spotify and saves credentials to a file """
+        """ Authenticates using OAuth and saves credentials to a file """
 
-        cred_location = Config.get_credentials_location()
+        # Build base session configuration (store_credentials is False by default)
+        session_builder = Session.Builder()
+        session_builder.conf.store_credentials = False
 
-        if Path(cred_location).is_file():
+        # Handle stored credentials from config
+        if Config.get_save_credentials():
+            creds = Config.get_credentials_location()
+            session_builder.conf.stored_credentials_file = str(creds)
+            if creds and Path(creds).exists():
+                # Try using stored credentials first
+                try:
+                    cls.SESSION = Session.Builder().stored_file(creds).create()
+                    return
+                except RuntimeError:
+                    pass
+            else:
+                # Allow storing new credentials
+                session_builder.conf.store_credentials = True
+
+        # Support login via command line username + token, if provided
+        if getattr(args, "username", None) not in {None, ""} and getattr(args, "token", None) not in {None, ""}:
             try:
-                conf = Session.Configuration.Builder().set_store_credentials(False).build()
-                cls.SESSION = Session.Builder(conf).stored_file(cred_location).create()
+                auth_obj = {
+                    "username": args.username,
+                    "credentials": args.token,
+                    "type": AuthenticationType.keys()[1]
+                }
+                auth_as_bytes = base64.b64encode(json.dumps(auth_obj, ensure_ascii=True).encode("ascii"))
+                cls.SESSION = session_builder.stored(auth_as_bytes).create()
                 return
-            except RuntimeError:
+            except Exception:
+                # Fall back to interactive OAuth login if this fails
                 pass
-        while True:
-            user_name = args.username if args.username else ''
-            while len(user_name) == 0:
-                user_name = input('Username: ')
-            password = args.password if args.password else pwinput(prompt='Password: ', mask='*')
-            try:
-                if Config.get_save_credentials():
-                    conf = Session.Configuration.Builder().set_stored_credential_file(cred_location).build()
-                else:
-                    conf = Session.Configuration.Builder().set_store_credentials(False).build()
-                cls.SESSION = Session.Builder(conf).user_pass(user_name, password).create()
-                return
-            except RuntimeError:
-                pass
+
+        # Fallback: interactive OAuth login with local redirect
+        from zotify.termoutput import Printer, PrintChannel
+
+        def oauth_print(url):
+            Printer.new_print(PrintChannel.MANDATORY, f"Click on the following link to login:\n{url}")
+
+        port = 4381
+        # Config.get_oauth_address() falls back to 127.0.0.1 if unset in this fork
+        redirect_address = getattr(Config, "get_oauth_address", None)
+        if callable(redirect_address):
+            addr = redirect_address()
+        else:
+            addr = "127.0.0.1"
+        redirect_url = f"http://{addr}:{port}/login"
+
+        session_builder.login_credentials = OAuth(MercuryRequests.keymaster_client_id, redirect_url, oauth_print).flow()
+        cls.SESSION = session_builder.create()
+        return
 
     @classmethod
     def get_content_stream(cls, content_id, quality):
