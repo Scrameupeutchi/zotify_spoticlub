@@ -25,11 +25,8 @@ class Zotify:
 
     @classmethod
     def login(cls, args):
-        """ Authenticates using OAuth and saves credentials to a file """
-
-        # Build base session configuration (store_credentials is False by default)
         session_builder = Session.Builder()
-        session_builder.conf.store_credentials = False
+        session_builder.conf.store_credentials = True
 
         # Handle stored credentials from config
         if Config.get_save_credentials():
@@ -43,10 +40,8 @@ class Zotify:
                 except RuntimeError:
                     pass
             else:
-                # Allow storing new credentials
                 session_builder.conf.store_credentials = True
 
-        # Support login via command line username + token, if provided
         if getattr(args, "username", None) not in {None, ""} and getattr(args, "token", None) not in {None, ""}:
             try:
                 auth_obj = {
@@ -58,18 +53,15 @@ class Zotify:
                 cls.SESSION = session_builder.stored(auth_as_bytes).create()
                 return
             except Exception:
-                # Fall back to interactive OAuth login if this fails
                 pass
 
-        # Fallback: interactive OAuth login with local redirect
         from zotify.termoutput import Printer, PrintChannel
 
         def oauth_print(url):
-            Printer.new_print(PrintChannel.MANDATORY, f"Click on the following link to login:\n{url}")
-
+            Printer.print(PrintChannel.WARNINGS, f"Click on the following link to login:\n{url}")
         port = 4381
-        # Config.get_oauth_address() falls back to 127.0.0.1 if unset in this fork
         redirect_address = getattr(Config, "get_oauth_address", None)
+
         if callable(redirect_address):
             addr = redirect_address()
         else:
@@ -118,7 +110,6 @@ class Zotify:
 
     @classmethod
     def invoke_url(cls, url, tryCount=0):
-        # we need to import that here, otherwise we will get circular imports!
         from zotify.termoutput import Printer, PrintChannel
         headers = cls.get_auth_header()
         response = requests.get(url, headers=headers)

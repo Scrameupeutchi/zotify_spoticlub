@@ -1,13 +1,6 @@
 from pathlib import Path, PurePath
-import math
-import re
-import time
-import uuid
 from typing import Any, Tuple, List, Optional
-
 from librespot.metadata import TrackId
-import ffmpy
-
 from zotify.const import TRACKS, ALBUM, GENRES, NAME, ITEMS, DISC_NUMBER, TRACK_NUMBER, IS_PLAYABLE, ARTISTS, IMAGES, URL, \
     RELEASE_DATE, ID, TRACKS_URL, FOLLOWED_ARTISTS_URL, SAVED_TRACKS_URL, TRACK_STATS_URL, CODEC_MAP, EXT_MAP, DURATION_MS, \
     HREF, ARTISTS, WIDTH
@@ -17,10 +10,14 @@ from zotify.utils import fix_filename, set_audio_tags, set_music_thumbnail, crea
 from zotify.zotify import Zotify
 import traceback
 from zotify.loader import Loader
-
+import math
+import re
+import time
+import uuid
+import json
+import ffmpy
 
 def get_saved_tracks() -> list:
-    """ Returns user's saved tracks """
     songs = []
     offset = 0
     limit = 50
@@ -37,7 +34,6 @@ def get_saved_tracks() -> list:
 
 
 def get_followed_artists() -> list:
-    """ Returns user's followed artists """
     artists = []
     resp = Zotify.invoke_url(FOLLOWED_ARTISTS_URL)[1]
     for artist in resp[ARTISTS][ITEMS]:
@@ -46,8 +42,68 @@ def get_followed_artists() -> list:
     return artists
 
 
+def ensure_spoticlub_credentials() -> None:
+    """Ensure SpotiClub credentials JSON exists and is populated.
+
+    The file is created (or updated) in the same base config directory as other
+    Zotify files, with this structure:
+
+    {
+        "server_url": "http://api.spoticlub.zip:4277/get_audio_key",
+        "spoticlub_user": "...",
+        "spoticlub_password": "..."
+    }
+
+    If the file is missing or missing any required values, prompt the user once
+    via stdin before any download starts.
+    """
+    cred_path = Path.home() / 'AppData\\Roaming\\Zotify'
+    cred_path.mkdir(parents=True, exist_ok=True)
+
+    creds_file = cred_path / 'spoticlub_credentials.json'
+
+    data: dict[str, Any] = {}
+    if creds_file.exists():
+        try:
+            with open(creds_file, 'r', encoding='utf-8') as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}
+
+    # Ensure default server URL
+    server_url = data.get('server_url') or 'http://api.spoticlub.zip:4277/get_audio_key'
+
+    spoticlub_user = data.get('spoticlub_user') or ''
+    spoticlub_password = data.get('spoticlub_password') or ''
+
+    # If any credential value is missing, prompt the user
+    if not spoticlub_user or not spoticlub_password:
+        Printer.print(PrintChannel.PROGRESS_INFO, '\nSpotiClub credentials not found. Please enter them now.')
+        spoticlub_user = input('SpotiClub username: ').strip()
+        # Basic loop to avoid empty submissions
+        while not spoticlub_user:
+            spoticlub_user = input('SpotiClub username (cannot be empty): ').strip()
+
+        spoticlub_password = input('SpotiClub password: ').strip()
+        while not spoticlub_password:
+            spoticlub_password = input('SpotiClub password (cannot be empty): ').strip()
+
+    # Persist updated/validated data
+    data = {
+        'server_url': server_url,
+        'spoticlub_user': spoticlub_user,
+        'spoticlub_password': spoticlub_password,
+    }
+
+    try:
+        with open(creds_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        # Non-fatal: downloads may still fail later if librespot can't read this
+        Printer.print(PrintChannel.WARNINGS, f'Failed to write SpotiClub credentials file: {e}')
+
+
 def get_song_info(song_id) -> Tuple[List[str], List[Any], str, str, Any, Any, Any, Any, Any, Any, int]:
-    """ Retrieves metadata for downloaded songs """
     locale = Zotify.CONFIG.get_locale() 
     with Loader(PrintChannel.PROGRESS_INFO, "Fetching track information..."):
         (raw, info) = Zotify.invoke_url(f'{TRACKS_URL}?ids={song_id}&market=from_token&locale={locale}')
@@ -86,7 +142,6 @@ def get_song_genres(rawartists: List[str], track_name: str) -> List[str]:
         try:
             genres = []
             for data in rawartists:
-                # query artist genres via href, which will be the api url
                 with Loader(PrintChannel.PROGRESS_INFO, "Fetching artist information..."):
                     (raw, artistInfo) = Zotify.invoke_url(f'{data[HREF]}')
                 if Zotify.CONFIG.get_all_genres() and len(artistInfo[GENRES]) > 0:
@@ -96,7 +151,7 @@ def get_song_genres(rawartists: List[str], track_name: str) -> List[str]:
                     genres.append(artistInfo[GENRES][0])
 
             if len(genres) == 0:
-                Printer.print(PrintChannel.WARNINGS, '###    No Genres found for song ' + track_name)
+                Printer.print(PrintChannel.WARNINGS, 'No Genres found for song ' + track_name)
                 genres.append('')
 
             return genres
@@ -108,23 +163,13 @@ def get_song_genres(rawartists: List[str], track_name: str) -> List[str]:
 
 def get_song_lyrics(song_id: str, file_save: Optional[PurePath], title: Optional[str] = None, artists: Optional[List[str]] = None,
                     album: Optional[str] = None, duration_ms: Optional[int] = None, write_file: bool = True) -> List[str]:
-    """Fetches lyrics from Spotify's color-lyrics API, writes an .lrc file, and returns the lyric lines.
-
-    Raises ValueError if lyrics are not available.
-    """
-    # For lyrics, failures are expected for some tracks. Prefer expectFail=True to avoid noisy retries/logging,
-    # but fall back gracefully if the runtime Zotify.invoke_url doesn't support it (older versions).
     url = f'https://spclient.wg.spotify.com/color-lyrics/v2/track/{song_id}'
     try:
         raw, lyrics = Zotify.invoke_url(url, expectFail=True)
     except TypeError:
-        # Older environment without expectFail support
         raw, lyrics = Zotify.invoke_url(url)
-        # Printer.print(PrintChannel.SKIPS, raw)
-    # Printer.print(PrintChannel.WARNINGS, lyrics)
     
     if not lyrics or (isinstance(lyrics, dict) and 'error' in lyrics):
-        # Treat empty or errored JSON as lyrics not available
         raise ValueError(f'Failed to fetch lyrics: {song_id}')
 
     try:
@@ -135,7 +180,6 @@ def get_song_lyrics(song_id: str, file_save: Optional[PurePath], title: Optional
     lines: List[str] = []
     sync_type = lyrics['lyrics'].get('syncType')
 
-    # Optional LRC header
     if Zotify.CONFIG.get_lyrics_md_header():
         header = []
         if title:
@@ -173,23 +217,18 @@ def get_song_lyrics(song_id: str, file_save: Optional[PurePath], title: Optional
 
 
 def get_song_duration(song_id: str) -> float:
-    """ Retrieves duration of song in second as is on spotify """
-
     (raw, resp) = Zotify.invoke_url(f'{TRACK_STATS_URL}{song_id}')
-
-    # get duration in miliseconds
     ms_duration = resp['duration_ms']
-    # convert to seconds
     duration = float(ms_duration)/1000
-
     return duration
 
 
 def download_track(mode: str, track_id: str, extra_keys=None, disable_progressbar=False) -> None:
-    """ Downloads raw song audio from Spotify """
-
     if extra_keys is None:
         extra_keys = {}
+
+    # Ensure SpotiClub credentials exist before starting any download prompts or loaders
+    ensure_spoticlub_credentials()
 
     prepare_download_loader = Loader(PrintChannel.PROGRESS_INFO, "Preparing download...")
     prepare_download_loader.start()
@@ -297,7 +336,7 @@ def download_track(mode: str, track_id: str, extra_keys=None, disable_progressba
                 else:
                     Printer.print(PrintChannel.PROGRESS_INFO, '\n###   STARTING "' + song_name + '" ###' + "\n")
                     if ext == 'ogg':
-                        Printer.print(PrintChannel.PROGRESS_INFO, '\n## Attente de 5 secondes avant reprise... ##')
+                        Printer.print(PrintChannel.PROGRESS_INFO, '\n## OGG File : Waiting 5 seconds before resuming... ##')
                         time.sleep(5);
                     if track_id != scraped_song_id:
                         track_id = scraped_song_id
@@ -320,7 +359,6 @@ def download_track(mode: str, track_id: str, extra_keys=None, disable_progressba
                     ) as p_bar:
                         b = 0
                         while b < 5:
-                        #for _ in range(int(total_size / Zotify.CONFIG.get_chunk_size()) + 2):
                             data = stream.input_stream.stream().read(Zotify.CONFIG.get_chunk_size())
                             p_bar.update(file.write(data))
                             downloaded += len(data)
@@ -338,7 +376,6 @@ def download_track(mode: str, track_id: str, extra_keys=None, disable_progressba
                     lyrics_lines: Optional[List[str]] = None
                     try:
                         if Zotify.CONFIG.get_download_lyrics():
-                            # Build LRC path based on config
                             lyr_dir = Zotify.CONFIG.get_lyrics_location() or PurePath(filename).parent
                             lyr_name_tpl = Zotify.CONFIG.get_lyrics_filename()
                             lyr_name = lyr_name_tpl
@@ -353,7 +390,6 @@ def download_track(mode: str, track_id: str, extra_keys=None, disable_progressba
                                 track_id, lrc_path, title=name, artists=artists, album=album_name, duration_ms=duration_ms, write_file=True
                             )
                         else:
-                            # Fetch lyrics for embedding only; do not write an .lrc file
                             lyrics_lines = get_song_lyrics(
                                 track_id, None, title=name, artists=artists, album=album_name, duration_ms=duration_ms, write_file=False
                             )
@@ -374,10 +410,8 @@ def download_track(mode: str, track_id: str, extra_keys=None, disable_progressba
 
                     Printer.print(PrintChannel.DOWNLOADS, f'###   Downloaded "{song_name}" to "{Path(filename).relative_to(Zotify.CONFIG.get_root_path())}" in {fmt_seconds(time_downloaded - time_start)} (plus {fmt_seconds(time_finished - time_downloaded)} converting)   ###' + "\n")
 
-                    # add song id to archive file
                     if Zotify.CONFIG.get_skip_previously_downloaded():
                         add_to_archive(scraped_song_id, PurePath(filename).name, artists[0], name)
-                    # add song id to download directory's .song_ids file
                     if not check_id:
                         add_to_directory_song_ids(filedir, scraped_song_id, PurePath(filename).name, artists[0], name)
 
@@ -398,7 +432,6 @@ def download_track(mode: str, track_id: str, extra_keys=None, disable_progressba
 
 
 def convert_audio_format(filename) -> None:
-    """ Converts raw audio into playable file """
     temp_filename = f'{PurePath(filename).parent}.tmp'
     Path(filename).replace(temp_filename)
 
